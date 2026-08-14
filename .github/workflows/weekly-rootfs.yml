@@ -4,14 +4,15 @@ on:
   workflow_dispatch:
     inputs:
       bump:
-        description: Semantic version component to increment when dispatching from main
+        description: Build/release mode for manual dispatch
         type: choice
         required: true
-        default: patch
+        default: no-release
         options:
-          - patch
-          - minor
-          - major
+          - no-release
+          - release-patch
+          - release-minor
+          - release-major
   pull_request:
     branches:
       - main
@@ -67,22 +68,44 @@ jobs:
           release=false
           bump=patch
 
-          # Only a build whose checked-out ref is main may publish. This covers
-          # pushes/merges to main and scheduled runs. workflow_dispatch follows
-          # the same rule, so dispatching another branch is build-only.
-          if [[ "$GITHUB_REF" == "refs/heads/main" && "$GITHUB_EVENT_NAME" != "pull_request" ]]; then
-              release=true
-
-              if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
-                  bump="${DISPATCH_BUMP:-patch}"
-              fi
-          fi
-
-          case "$bump" in
-              patch|minor|major)
+          case "$GITHUB_EVENT_NAME" in
+              push|schedule)
+                  # Automatic main builds publish patch releases. The workflow
+                  # itself is scoped so these events only run for main.
+                  release=true
+                  bump=patch
+                  ;;
+              workflow_dispatch)
+                  case "${DISPATCH_BUMP:-no-release}" in
+                      no-release)
+                          release=false
+                          bump=patch
+                          ;;
+                      release-patch)
+                          bump=patch
+                          [[ "$GITHUB_REF" == "refs/heads/main" ]] && release=true
+                          ;;
+                      release-minor)
+                          bump=minor
+                          [[ "$GITHUB_REF" == "refs/heads/main" ]] && release=true
+                          ;;
+                      release-major)
+                          bump=major
+                          [[ "$GITHUB_REF" == "refs/heads/main" ]] && release=true
+                          ;;
+                      *)
+                          echo "Unsupported manual build mode: ${DISPATCH_BUMP}" >&2
+                          exit 1
+                          ;;
+                  esac
+                  ;;
+              pull_request)
+                  # PRs always build and validate without publishing.
+                  release=false
+                  bump=patch
                   ;;
               *)
-                  echo "Unsupported version bump: $bump" >&2
+                  echo "Unsupported event: $GITHUB_EVENT_NAME" >&2
                   exit 1
                   ;;
           esac
@@ -92,6 +115,7 @@ jobs:
 
           echo "Event: $GITHUB_EVENT_NAME"
           echo "Ref: $GITHUB_REF"
+          echo "Manual mode: ${DISPATCH_BUMP:-n/a}"
           echo "Publish release: $release"
           echo "Version bump: $bump"
 
