@@ -18,7 +18,10 @@ The main workflow runs in four situations:
 | Pull request opened, reopened, or updated against `main` | Yes | No | None |
 | Push or merge to `main` | Yes | Yes | Patch |
 | Weekly schedule | Yes | Yes | Patch |
-| Manual dispatch from `main` | Yes | Yes | Patch, minor, or major |
+| Manual dispatch from `main` with `no-release` | Yes | No | None |
+| Manual dispatch from `main` with `release-patch` | Yes | Yes | Patch |
+| Manual dispatch from `main` with `release-minor` | Yes | Yes | Minor |
+| Manual dispatch from `main` with `release-major` | Yes | Yes | Major |
 | Manual dispatch from another branch | Yes | No | None |
 
 A push to a branch with an open pull request triggers the `pull_request` `synchronize` event, so the proposed rootfs is rebuilt and validated for each PR update without publishing anything.
@@ -35,13 +38,16 @@ vMAJOR.MINOR.PATCH
 
 Version calculation is performed by [`arran4/git-tag-inc-action`](https://github.com/arran4/git-tag-inc-action).
 
-Normal pushes and merges to `main`, plus scheduled builds, increment the patch version. Manual dispatches from `main` expose a choice of:
+Normal pushes and merges to `main`, plus scheduled builds, increment the patch version. Manual dispatches expose one build/release choice:
 
 ```text
-patch
-minor
-major
+no-release
+release-patch
+release-minor
+release-major
 ```
+
+`no-release` is the default. The three `release-*` modes only publish when the workflow is dispatched from `main`; on another branch they still perform the full build and validation but do not publish.
 
 The prospective tag is created locally before the rootfs build so it can be embedded in the build metadata. It is not published merely because version calculation succeeded. GitHub creates the remote tag together with the Release only after the rootfs has built and passed validation.
 
