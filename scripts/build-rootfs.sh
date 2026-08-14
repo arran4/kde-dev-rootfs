@@ -90,7 +90,7 @@ sudo chroot "$ROOTFS_DIR" \
     | LC_ALL=C sort \
     > "$DIST_DIR/package-manifest.txt"
 
-"$SCRIPT_DIR/version-summary.sh" \
+bash "$SCRIPT_DIR/version-summary.sh" \
     "$ROOTFS_DIR" \
     "$DIST_DIR/package-manifest.txt" \
     > "$DIST_DIR/versions.md"
@@ -123,7 +123,7 @@ while IFS= read -r -d '' log_file; do
     sudo truncate -s 0 "$log_file"
 done < <(sudo find "$ROOTFS_DIR/var/log" -type f -print0)
 
-"$SCRIPT_DIR/validate-rootfs.sh" "$ROOTFS_DIR"
+bash "$SCRIPT_DIR/validate-rootfs.sh" "$ROOTFS_DIR"
 
 echo "Creating $ARCHIVE"
 sudo tar \
