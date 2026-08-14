@@ -14,11 +14,11 @@ if [[ ! -f "$MANIFEST" ]]; then
     exit 1
 fi
 
-PRETTY_NAME="$((
+PRETTY_NAME="$(
     set +u
     . "$ROOTFS/etc/os-release"
     printf '%s' "${PRETTY_NAME:-Debian}"
-))"
+)"
 
 package_version() {
     local package="$1"
