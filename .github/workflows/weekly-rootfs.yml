@@ -1,7 +1,27 @@
-name: Weekly KDE development rootfs
+name: Build KDE development rootfs
 
 on:
   workflow_dispatch:
+    inputs:
+      bump:
+        description: Semantic version component to increment when dispatching from main
+        type: choice
+        required: true
+        default: patch
+        options:
+          - patch
+          - minor
+          - major
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+  push:
+    branches:
+      - main
   schedule:
     # Monday 04:17 UTC. Avoid the top of the hour, when scheduled Actions
     # commonly experience the most queueing.
@@ -12,8 +32,10 @@ permissions:
   packages: write
 
 concurrency:
-  group: kde-dev-rootfs-release
-  cancel-in-progress: false
+  # Main/scheduled releases are serialized. Each PR gets its own group, and a
+  # newer push to the same PR supersedes an older in-progress validation build.
+  group: kde-dev-rootfs-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   SUITE: forky
@@ -21,31 +43,85 @@ env:
 
 jobs:
   build:
-    name: Build and publish rootfs
+    name: Build rootfs
     runs-on: ubuntu-24.04
     timeout-minutes: 120
 
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          # git-tag-inc must be able to inspect the complete tag history.
+          fetch-depth: 0
 
       - name: Prepare scripts
         run: chmod +x scripts/*.sh scripts/*.py
 
-      - name: Determine release metadata
-        id: metadata
+      - name: Determine build mode
+        id: mode
         env:
-          GH_TOKEN: ${{ github.token }}
+          DISPATCH_BUMP: ${{ inputs.bump }}
         run: |
           set -euo pipefail
 
-          base_tag="snapshot-$(date -u +'%Y%m%d')"
-          tag="$base_tag"
+          release=false
+          bump=patch
 
-          # workflow_dispatch may be run repeatedly on one UTC date. Keep every
-          # snapshot immutable rather than replacing an existing release.
-          if gh release view "$tag" >/dev/null 2>&1; then
-              tag="${base_tag}-r${GITHUB_RUN_NUMBER}"
+          # Only a build whose checked-out ref is main may publish. This covers
+          # pushes/merges to main and scheduled runs. workflow_dispatch follows
+          # the same rule, so dispatching another branch is build-only.
+          if [[ "$GITHUB_REF" == "refs/heads/main" && "$GITHUB_EVENT_NAME" != "pull_request" ]]; then
+              release=true
+
+              if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+                  bump="${DISPATCH_BUMP:-patch}"
+              fi
+          fi
+
+          case "$bump" in
+              patch|minor|major)
+                  ;;
+              *)
+                  echo "Unsupported version bump: $bump" >&2
+                  exit 1
+                  ;;
+          esac
+
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+          echo "bump=$bump" >> "$GITHUB_OUTPUT"
+
+          echo "Event: $GITHUB_EVENT_NAME"
+          echo "Ref: $GITHUB_REF"
+          echo "Publish release: $release"
+          echo "Version bump: $bump"
+
+      - name: Set release version
+        id: tagger
+        if: steps.mode.outputs.release == 'true'
+        uses: arran4/git-tag-inc-action@v1
+        with:
+          action: ${{ steps.mode.outputs.bump }}
+          github-token: ${{ github.token }}
+
+      - name: Determine build metadata
+        id: metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE: ${{ steps.mode.outputs.release }}
+          RELEASE_TAG: ${{ steps.tagger.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$RELEASE" == "true" ]]; then
+              if [[ -z "$RELEASE_TAG" ]]; then
+                  echo "git-tag-inc-action did not return a version" >&2
+                  exit 1
+              fi
+              build_tag="$RELEASE_TAG"
+          elif [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+              build_tag="pr-${{ github.event.pull_request.number }}-${GITHUB_SHA:0:12}"
+          else
+              build_tag="build-${GITHUB_SHA:0:12}"
           fi
 
           previous_tag="$(
@@ -58,13 +134,13 @@ jobs:
           built_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           oci_repo="ghcr.io/${GITHUB_REPOSITORY,,}"
 
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "tag=$build_tag" >> "$GITHUB_OUTPUT"
           echo "previous_tag=$previous_tag" >> "$GITHUB_OUTPUT"
           echo "built_at=$built_at" >> "$GITHUB_OUTPUT"
           echo "oci_repo=$oci_repo" >> "$GITHUB_OUTPUT"
 
-          echo "Snapshot: $tag"
-          echo "Previous: ${previous_tag:-none}"
+          echo "Build tag: $build_tag"
+          echo "Previous release: ${previous_tag:-none}"
           echo "OCI repository: $oci_repo"
 
       - name: Build latest Debian testing rootfs
@@ -94,7 +170,24 @@ jobs:
               dist/package-manifest.txt \
               | tee dist/package-changes.md
 
+      - name: Write build summary
+        env:
+          RELEASE: ${{ steps.mode.outputs.release }}
+          TAG: ${{ steps.metadata.outputs.tag }}
+        run: |
+          {
+              printf '# KDE development rootfs build\n\n'
+              printf -- '- Build identifier: `%s`\n' "$TAG"
+              printf -- '- Ref: `%s`\n' "$GITHUB_REF"
+              printf -- '- Commit: `%s`\n' "$GITHUB_SHA"
+              printf -- '- Publication enabled: `%s`\n\n' "$RELEASE"
+              cat dist/versions.md
+              printf '\n## Changes from previous release\n\n'
+              cat dist/package-changes.md
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Build release notes
+        if: steps.mode.outputs.release == 'true'
         env:
           TAG: ${{ steps.metadata.outputs.tag }}
           PREVIOUS_TAG: ${{ steps.metadata.outputs.previous_tag }}
@@ -109,9 +202,9 @@ jobs:
 
           {
               printf '# KDE development rootfs `%s`\n\n' "$TAG"
-              printf 'Automated weekly Debian testing KDE/Qt development rootfs snapshot.\n\n'
+              printf 'Debian testing KDE/Qt development rootfs release.\n\n'
 
-              printf '## Snapshot\n\n'
+              printf '## Build\n\n'
               printf -- '- Debian suite: `%s`\n' "$SUITE"
               printf -- '- Architecture: `%s`\n' "$ARCH"
               printf -- '- Built: `%s`\n' "$BUILT_AT"
@@ -120,13 +213,13 @@ jobs:
               printf -- '- SHA-256: `%s`\n' "$sha256"
 
               if [[ -n "$PREVIOUS_TAG" ]]; then
-                  printf -- '- Previous snapshot: `%s`\n' "$PREVIOUS_TAG"
+                  printf -- '- Previous release: `%s`\n' "$PREVIOUS_TAG"
               fi
 
               printf '\n'
               cat dist/versions.md
 
-              printf '\n## Changes from previous snapshot\n\n'
+              printf '\n## Changes from previous release\n\n'
               cat dist/package-changes.md
 
               printf '\n## Distribution\n\n'
@@ -143,9 +236,11 @@ jobs:
           } | tee dist/release-notes.md
 
       - name: Install ORAS
+        if: steps.mode.outputs.release == 'true'
         uses: oras-project/setup-oras@v1
 
       - name: Login to GitHub Container Registry
+        if: steps.mode.outputs.release == 'true'
         env:
           GHCR_TOKEN: ${{ github.token }}
         run: |
@@ -155,6 +250,7 @@ jobs:
                   --password-stdin
 
       - name: Publish immutable OCI artifact
+        if: steps.mode.outputs.release == 'true'
         env:
           TAG: ${{ steps.metadata.outputs.tag }}
           BUILT_AT: ${{ steps.metadata.outputs.built_at }}
@@ -177,6 +273,7 @@ jobs:
               'dist/versions.md:text/markdown'
 
       - name: Create GitHub Release
+        if: steps.mode.outputs.release == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.metadata.outputs.tag }}
@@ -184,6 +281,9 @@ jobs:
           set -euo pipefail
           asset="kde-dev-rootfs-${SUITE}-${ARCH}.tar.zst"
 
+          # git-tag-inc-action created this tag locally. GitHub creates the
+          # corresponding remote tag at this exact commit together with the
+          # release, so a failed build can never publish its prospective tag.
           gh release create "$TAG" \
               --target "$GITHUB_SHA" \
               --title "KDE dev rootfs ${TAG}" \
@@ -196,6 +296,7 @@ jobs:
               dist/package-changes.md
 
       - name: Update mutable OCI tags
+        if: steps.mode.outputs.release == 'true'
         env:
           TAG: ${{ steps.metadata.outputs.tag }}
           OCI_REPO: ${{ steps.metadata.outputs.oci_repo }}
