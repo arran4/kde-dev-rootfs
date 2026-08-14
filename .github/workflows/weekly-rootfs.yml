@@ -114,16 +114,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE: ${{ steps.mode.outputs.release }}
-          RELEASE_TAG: ${{ steps.tagger.outputs.version }}
         run: |
           set -euo pipefail
 
           if [[ "$RELEASE" == "true" ]]; then
-              if [[ -z "$RELEASE_TAG" ]]; then
-                  echo "git-tag-inc-action did not return a version" >&2
+              # git-tag-inc-action creates the prospective semantic tag locally.
+              # Resolve it directly from HEAD so publication never depends on
+              # action-output plumbing.
+              build_tag="$(git describe --tags --exact-match HEAD)"
+
+              if [[ -z "$build_tag" ]]; then
+                  echo "git-tag-inc-action did not create a tag at HEAD" >&2
                   exit 1
               fi
-              build_tag="$RELEASE_TAG"
           elif [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
               build_tag="pr-${{ github.event.pull_request.number }}-${GITHUB_SHA:0:12}"
           else
