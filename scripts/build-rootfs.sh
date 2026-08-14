@@ -24,6 +24,12 @@ fi
 rm -rf "$ROOTFS_DIR" "$DIST_DIR"
 mkdir -p "$ROOTFS_DIR" "$DIST_DIR" "$REPO_ROOT/.work"
 
+# The target directory is created by the unprivileged Actions runner. Modern
+# systemd tools reject a chroot whose / is owned by a non-root UID, even when
+# the directories below it are correctly root-owned. Make the root of the
+# filesystem root-owned before debootstrap populates it.
+sudo chown 0:0 "$ROOTFS_DIR"
+
 sudo apt-get update
 sudo apt-get install -y --no-install-recommends \
     debootstrap \
