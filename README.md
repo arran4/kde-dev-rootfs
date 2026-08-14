@@ -51,12 +51,28 @@ The package selection is maintained in [`packages.txt`](packages.txt). It includ
 
 All transitive Debian dependencies are included by APT at build time.
 
-## Build locally
+## Repository checks
 
-The build requires a Debian or Ubuntu-like host with `sudo` and `apt-get`.
+Run the fast repository checks with:
 
 ```bash
-./scripts/build-rootfs.sh
+make check
+```
+
+This validates shell syntax, Python syntax and the package list without building a rootfs.
+
+## Build locally
+
+The full build requires a Debian or Ubuntu-like host with `sudo` and `apt-get`.
+
+```bash
+make build
+```
+
+Equivalently:
+
+```bash
+bash scripts/build-rootfs.sh
 ```
 
 Output is written to `dist/`:
@@ -76,7 +92,7 @@ Environment variables can override the defaults:
 SUITE=forky \
 ARCH=amd64 \
 MIRROR=https://deb.debian.org/debian \
-./scripts/build-rootfs.sh
+bash scripts/build-rootfs.sh
 ```
 
 ## Using a release rootfs
