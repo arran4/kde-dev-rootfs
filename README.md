@@ -2,22 +2,50 @@
 
 A reproducible Debian testing (`forky`) development root filesystem containing a current Qt 6 and KDE Frameworks 6 toolchain.
 
-The repository builds a fresh rootfs every week from the current Debian testing repositories. Each successful build is published in two forms:
+The repository continuously validates and periodically publishes a fresh rootfs from the current Debian testing repositories. Published builds are distributed in two forms:
 
 - a compressed `tar.zst` rootfs attached to a GitHub Release;
 - the same rootfs and metadata as a public OCI artifact in GitHub Container Registry (GHCR).
 
 The release archive is suitable for CI systems, development agents, chroots and PRoot-based environments that need a recent KDE/Qt development stack without pulling a conventional container image.
 
-## Published artifacts
+## Workflow behavior
 
-Weekly releases use tags of the form:
+The main workflow runs in four situations:
+
+| Trigger | Full rootfs build | GitHub Release / GHCR publication | Version bump |
+|---|---:|---:|---|
+| Pull request opened, reopened, or updated against `main` | Yes | No | None |
+| Push or merge to `main` | Yes | Yes | Patch |
+| Weekly schedule | Yes | Yes | Patch |
+| Manual dispatch from `main` | Yes | Yes | Patch, minor, or major |
+| Manual dispatch from another branch | Yes | No | None |
+
+A push to a branch with an open pull request triggers the `pull_request` `synchronize` event, so the proposed rootfs is rebuilt and validated for each PR update without publishing anything.
+
+Publication is always gated on the checked-out ref being `refs/heads/main`. Pull-request builds and manual runs from other branches therefore never authenticate to GHCR, create tags, or create GitHub Releases.
+
+## Versioning
+
+Published releases use semantic tags:
 
 ```text
-snapshot-YYYYMMDD
+vMAJOR.MINOR.PATCH
 ```
 
-A repeated manual build on the same UTC date receives a run-number suffix.
+Version calculation is performed by [`arran4/git-tag-inc-action`](https://github.com/arran4/git-tag-inc-action).
+
+Normal pushes and merges to `main`, plus scheduled builds, increment the patch version. Manual dispatches from `main` expose a choice of:
+
+```text
+patch
+minor
+major
+```
+
+The prospective tag is created locally before the rootfs build so it can be embedded in the build metadata. It is not published merely because version calculation succeeded. GitHub creates the remote tag together with the Release only after the rootfs has built and passed validation.
+
+## Published artifacts
 
 Release assets include:
 
@@ -32,10 +60,12 @@ package-changes.md
 The GHCR package is published as:
 
 ```text
-ghcr.io/arran4/kde-dev-rootfs:snapshot-YYYYMMDD
+ghcr.io/arran4/kde-dev-rootfs:vMAJOR.MINOR.PATCH
 ghcr.io/arran4/kde-dev-rootfs:forky-latest
 ghcr.io/arran4/kde-dev-rootfs:latest
 ```
+
+The semantic version tag is immutable. `forky-latest` and `latest` are moved only after the corresponding GitHub Release has been created successfully.
 
 GHCR stores this as an OCI artifact whose payload is the rootfs archive and associated metadata. It is not intended to be a Dockerfile-derived application image.
 
@@ -115,7 +145,11 @@ With ORAS:
 oras pull ghcr.io/arran4/kde-dev-rootfs:forky-latest
 ```
 
-The immutable `snapshot-YYYYMMDD` tags are preferred when reproducibility matters. `forky-latest` and `latest` move after each successful weekly publication.
+For reproducible use, prefer an immutable semantic tag such as:
+
+```bash
+oras pull ghcr.io/arran4/kde-dev-rootfs:v1.2.3
+```
 
 ## Release metadata
 
@@ -127,7 +161,9 @@ Every rootfs contains:
 /usr/share/kde-dev-rootfs/release-info
 ```
 
-`package-manifest.txt` records every installed Debian package and exact version. The GitHub Release also contains a human-readable summary of important Qt, KDE Frameworks, compiler and build-tool versions and a package-level diff from the previous release.
+`package-manifest.txt` records every installed Debian package and exact version. A published GitHub Release also contains a human-readable summary of important Qt, KDE Frameworks, compiler and build-tool versions and a package-level diff from the previous release.
+
+Pull-request and other build-only runs place the same version and package-diff information in the GitHub Actions job summary, but do not publish the resulting rootfs.
 
 ## Security model
 
@@ -139,9 +175,9 @@ The build intentionally does not copy repository credentials, user configuration
 
 ## Updating dependencies
 
-Edit `packages.txt`. The next manual or scheduled workflow run resolves the current versions from Debian testing and records them in the manifest and release summary.
+Edit `packages.txt`. Pull requests perform a complete build and validation without publishing. Once merged to `main`, the merge-triggered build creates the next patch release if validation succeeds.
 
-The scheduled workflow runs weekly and can also be started manually from the Actions tab.
+The workflow also rebuilds and publishes weekly so dependency updates from Debian testing are captured even when the repository itself has not changed.
 
 ## Redistribution
 
