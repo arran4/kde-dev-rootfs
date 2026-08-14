@@ -1,0 +1,206 @@
+name: Weekly KDE development rootfs
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Monday 04:17 UTC. Avoid the top of the hour, when scheduled Actions
+    # commonly experience the most queueing.
+    - cron: "17 4 * * 1"
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: kde-dev-rootfs-release
+  cancel-in-progress: false
+
+env:
+  SUITE: forky
+  ARCH: amd64
+
+jobs:
+  build:
+    name: Build and publish rootfs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Prepare scripts
+        run: chmod +x scripts/*.sh scripts/*.py
+
+      - name: Determine release metadata
+        id: metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          base_tag="snapshot-$(date -u +'%Y%m%d')"
+          tag="$base_tag"
+
+          # workflow_dispatch may be run repeatedly on one UTC date. Keep every
+          # snapshot immutable rather than replacing an existing release.
+          if gh release view "$tag" >/dev/null 2>&1; then
+              tag="${base_tag}-r${GITHUB_RUN_NUMBER}"
+          fi
+
+          previous_tag="$(
+              gh release view \
+                  --json tagName \
+                  --jq '.tagName' \
+                  2>/dev/null || true
+          )"
+
+          built_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          oci_repo="ghcr.io/${GITHUB_REPOSITORY,,}"
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "previous_tag=$previous_tag" >> "$GITHUB_OUTPUT"
+          echo "built_at=$built_at" >> "$GITHUB_OUTPUT"
+          echo "oci_repo=$oci_repo" >> "$GITHUB_OUTPUT"
+
+          echo "Snapshot: $tag"
+          echo "Previous: ${previous_tag:-none}"
+          echo "OCI repository: $oci_repo"
+
+      - name: Build latest Debian testing rootfs
+        env:
+          SNAPSHOT_TAG: ${{ steps.metadata.outputs.tag }}
+          SOURCE_REVISION: ${{ github.sha }}
+        run: ./scripts/build-rootfs.sh
+
+      - name: Download previous package manifest
+        if: steps.metadata.outputs.previous_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREVIOUS_TAG: ${{ steps.metadata.outputs.previous_tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p .work/previous
+
+          gh release download "$PREVIOUS_TAG" \
+              --pattern 'package-manifest.txt' \
+              --dir .work/previous \
+              || true
+
+      - name: Summarise package changes
+        run: |
+          python3 scripts/package-diff.py \
+              .work/previous/package-manifest.txt \
+              dist/package-manifest.txt \
+              | tee dist/package-changes.md
+
+      - name: Build release notes
+        env:
+          TAG: ${{ steps.metadata.outputs.tag }}
+          PREVIOUS_TAG: ${{ steps.metadata.outputs.previous_tag }}
+          BUILT_AT: ${{ steps.metadata.outputs.built_at }}
+          OCI_REPO: ${{ steps.metadata.outputs.oci_repo }}
+        run: |
+          set -euo pipefail
+
+          asset="kde-dev-rootfs-${SUITE}-${ARCH}.tar.zst"
+          sha256="$(awk '{print $1}' "dist/${asset}.sha256")"
+          size_bytes="$(stat --format='%s' "dist/${asset}")"
+
+          {
+              printf '# KDE development rootfs `%s`\n\n' "$TAG"
+              printf 'Automated weekly Debian testing KDE/Qt development rootfs snapshot.\n\n'
+
+              printf '## Snapshot\n\n'
+              printf -- '- Debian suite: `%s`\n' "$SUITE"
+              printf -- '- Architecture: `%s`\n' "$ARCH"
+              printf -- '- Built: `%s`\n' "$BUILT_AT"
+              printf -- '- Source commit: `%s`\n' "$GITHUB_SHA"
+              printf -- '- Archive size: `%s` bytes\n' "$size_bytes"
+              printf -- '- SHA-256: `%s`\n' "$sha256"
+
+              if [[ -n "$PREVIOUS_TAG" ]]; then
+                  printf -- '- Previous snapshot: `%s`\n' "$PREVIOUS_TAG"
+              fi
+
+              printf '\n'
+              cat dist/versions.md
+
+              printf '\n## Changes from previous snapshot\n\n'
+              cat dist/package-changes.md
+
+              printf '\n## Distribution\n\n'
+              printf 'GitHub Release asset:\n\n'
+              printf '```text\n%s\n```\n\n' "$asset"
+
+              printf 'OCI artifact:\n\n'
+              printf '```text\n%s:%s\n' "$OCI_REPO" "$TAG"
+              printf '%s:%s-latest\n' "$OCI_REPO" "$SUITE"
+              printf '%s:latest\n```\n\n' "$OCI_REPO"
+
+              printf 'The complete installed package set is attached as '
+              printf '`package-manifest.txt`.\n'
+          } | tee dist/release-notes.md
+
+      - name: Install ORAS
+        uses: oras-project/setup-oras@v1
+
+      - name: Login to GitHub Container Registry
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: |
+          printf '%s' "$GHCR_TOKEN" \
+              | oras login ghcr.io \
+                  --username "$GITHUB_ACTOR" \
+                  --password-stdin
+
+      - name: Publish immutable OCI artifact
+        env:
+          TAG: ${{ steps.metadata.outputs.tag }}
+          BUILT_AT: ${{ steps.metadata.outputs.built_at }}
+          OCI_REPO: ${{ steps.metadata.outputs.oci_repo }}
+        run: |
+          set -euo pipefail
+          asset="kde-dev-rootfs-${SUITE}-${ARCH}.tar.zst"
+
+          oras push \
+              "${OCI_REPO}:${TAG}" \
+              --artifact-type 'application/vnd.arran4.kde-dev-rootfs.v1' \
+              --annotation "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+              --annotation "org.opencontainers.image.revision=${GITHUB_SHA}" \
+              --annotation "org.opencontainers.image.version=${TAG}" \
+              --annotation "org.opencontainers.image.created=${BUILT_AT}" \
+              --annotation "org.opencontainers.image.description=Debian ${SUITE} KDE and Qt development rootfs" \
+              "dist/${asset}:application/vnd.arran4.kde-dev-rootfs.rootfs.v1.tar+zstd" \
+              "dist/${asset}.sha256:text/plain" \
+              'dist/package-manifest.txt:text/tab-separated-values' \
+              'dist/versions.md:text/markdown'
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.metadata.outputs.tag }}
+        run: |
+          set -euo pipefail
+          asset="kde-dev-rootfs-${SUITE}-${ARCH}.tar.zst"
+
+          gh release create "$TAG" \
+              --target "$GITHUB_SHA" \
+              --title "KDE dev rootfs ${TAG}" \
+              --notes-file dist/release-notes.md \
+              --latest \
+              "dist/${asset}" \
+              "dist/${asset}.sha256" \
+              dist/package-manifest.txt \
+              dist/versions.md \
+              dist/package-changes.md
+
+      - name: Update mutable OCI tags
+        env:
+          TAG: ${{ steps.metadata.outputs.tag }}
+          OCI_REPO: ${{ steps.metadata.outputs.oci_repo }}
+        run: |
+          oras tag \
+              "${OCI_REPO}:${TAG}" \
+              "${SUITE}-latest" \
+              latest
