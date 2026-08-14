@@ -52,17 +52,60 @@ sudo debootstrap \
     "$MIRROR" \
     "$DEBOOTSTRAP_SCRIPT"
 
+# Modern systemd and D-Bus package maintainer scripts expect the usual
+# pseudo-filesystems to exist even when installing into an offline chroot.
+# Keep /run private to the rootfs, and unmount all of these before archiving.
+CHROOT_MOUNTS_ACTIVE=0
+
+mount_chroot_filesystems() {
+    sudo mkdir -p \
+        "$ROOTFS_DIR/proc" \
+        "$ROOTFS_DIR/sys" \
+        "$ROOTFS_DIR/dev" \
+        "$ROOTFS_DIR/run"
+
+    sudo mount -t proc proc "$ROOTFS_DIR/proc"
+    sudo mount -t sysfs sysfs "$ROOTFS_DIR/sys"
+    sudo mount --rbind /dev "$ROOTFS_DIR/dev"
+    sudo mount --make-rslave "$ROOTFS_DIR/dev"
+    sudo mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs "$ROOTFS_DIR/run"
+
+    CHROOT_MOUNTS_ACTIVE=1
+}
+
+unmount_chroot_filesystems() {
+    if [[ "$CHROOT_MOUNTS_ACTIVE" -eq 0 ]]; then
+        return
+    fi
+
+    # Reverse dependency order: /run is independent, /dev may contain nested
+    # mounts such as /dev/pts because it was recursively bind-mounted.
+    sudo umount "$ROOTFS_DIR/run" 2>/dev/null || true
+    sudo umount -R "$ROOTFS_DIR/dev" 2>/dev/null || true
+    sudo umount "$ROOTFS_DIR/sys" 2>/dev/null || true
+    sudo umount "$ROOTFS_DIR/proc" 2>/dev/null || true
+
+    CHROOT_MOUNTS_ACTIVE=0
+}
+
+trap unmount_chroot_filesystems EXIT
+mount_chroot_filesystems
+
 # Package installation must never try to start services in the build chroot.
 printf '#!/bin/sh\nexit 101\n' | sudo tee "$ROOTFS_DIR/usr/sbin/policy-rc.d" >/dev/null
 sudo chmod 0755 "$ROOTFS_DIR/usr/sbin/policy-rc.d"
 
 sudo chroot "$ROOTFS_DIR" \
-    /usr/bin/env DEBIAN_FRONTEND=noninteractive \
+    /usr/bin/env \
+        DEBIAN_FRONTEND=noninteractive \
+        SYSTEMD_OFFLINE=1 \
     apt-get update
 
 # Resolve the snapshot from the current state of Debian testing at build time.
 sudo chroot "$ROOTFS_DIR" \
-    /usr/bin/env DEBIAN_FRONTEND=noninteractive \
+    /usr/bin/env \
+        DEBIAN_FRONTEND=noninteractive \
+        SYSTEMD_OFFLINE=1 \
     apt-get -y full-upgrade
 
 mapfile -t PACKAGES < <(
@@ -78,7 +121,9 @@ if [[ ${#PACKAGES[@]} -eq 0 ]]; then
 fi
 
 sudo chroot "$ROOTFS_DIR" \
-    /usr/bin/env DEBIAN_FRONTEND=noninteractive \
+    /usr/bin/env \
+        DEBIAN_FRONTEND=noninteractive \
+        SYSTEMD_OFFLINE=1 \
     apt-get install -y --no-install-recommends \
     "${PACKAGES[@]}"
 
@@ -124,6 +169,10 @@ while IFS= read -r -d '' log_file; do
 done < <(sudo find "$ROOTFS_DIR/var/log" -type f -print0)
 
 bash "$SCRIPT_DIR/validate-rootfs.sh" "$ROOTFS_DIR"
+
+# Never archive mounted host/pseudo filesystems.
+unmount_chroot_filesystems
+trap - EXIT
 
 echo "Creating $ARCHIVE"
 sudo tar \
