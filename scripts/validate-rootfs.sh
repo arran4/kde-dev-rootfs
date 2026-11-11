@@ -101,6 +101,37 @@ find_package(KF6StatusNotifierItem REQUIRED)
 find_package(KF6Wallet REQUIRED)
 find_package(KF6WidgetsAddons REQUIRED)
 find_package(KF6XmlGui REQUIRED)
+add_executable(kde_dev_rootfs_smoke main.cpp)
+target_link_libraries(kde_dev_rootfs_smoke PRIVATE
+    Qt6::Core
+    Qt6::Widgets
+    KF6::Archive
+)
+EOF
+
+# Compile and link against real Qt and KDE libraries, then exercise them.
+# CMake-only checks do not detect missing headers, linker problems, or
+# dynamic-library/runtime incompatibilities.
+sudo tee "$SMOKE_DIR/main.cpp" >/dev/null <<'EOF'
+#include <QCoreApplication>
+#include <QFileInfo>
+#include <QIODevice>
+#include <QWidget>
+#include <KZip>
+
+static_assert(sizeof(QWidget) > 0, "Qt Widgets headers must be usable");
+
+int main(int argc, char **argv)
+{
+    QCoreApplication app(argc, argv);
+    const QString path = QStringLiteral("/tmp/kde-dev-rootfs-smoke/smoke.zip");
+    KZip archive(path);
+    if (!archive.open(QIODevice::WriteOnly)) {
+        return 1;
+    }
+    archive.close();
+    return QFileInfo(path).size() > 0 ? 0 : 2;
+}
 EOF
 
 sudo chroot "$ROOTFS" \
@@ -109,6 +140,12 @@ sudo chroot "$ROOTFS" \
     -B /tmp/kde-dev-rootfs-smoke/build \
     -G Ninja \
     -DCMAKE_BUILD_TYPE=Release
+
+sudo chroot "$ROOTFS" \
+    cmake --build /tmp/kde-dev-rootfs-smoke/build --parallel 2
+
+sudo chroot "$ROOTFS" \
+    /tmp/kde-dev-rootfs-smoke/build/kde_dev_rootfs_smoke
 
 sudo rm -rf "$SMOKE_DIR"
 
