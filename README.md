@@ -1,6 +1,6 @@
 # KDE development rootfs
 
-A reproducible Debian testing (`forky`) development root filesystem containing a current Qt 6 and KDE Frameworks 6 toolchain.
+A version-recorded Debian testing (`forky`) development root filesystem containing a current Qt 6 and KDE Frameworks 6 toolchain.
 
 The repository continuously validates and periodically publishes a fresh rootfs from the current Debian testing repositories. Published builds are distributed in two forms:
 
@@ -26,7 +26,7 @@ The main workflow runs in four situations:
 
 A push to a branch with an open pull request triggers the `pull_request` `synchronize` event, so the proposed rootfs is rebuilt and validated for each PR update without publishing anything.
 
-Publication is always gated on the checked-out ref being `refs/heads/main`. Pull-request builds and manual runs from other branches therefore never authenticate to GHCR, create tags, or create GitHub Releases.
+Publication is always gated on the checked-out ref being `refs/heads/main`. Pull-request builds and build-only manual runs use a separate read-only validation job; only main-branch publishing runs receive `contents: write` and `packages: write`. Pull-request builds and manual runs from other branches never authenticate to GHCR, create tags, or create GitHub Releases.
 
 ## Versioning
 
@@ -95,7 +95,7 @@ Run the fast repository checks with:
 make check
 ```
 
-This validates shell syntax, Python syntax and the package list without building a rootfs.
+This validates shell syntax, Python syntax and the package list without building a rootfs. Full rootfs validation also compiles, links and runs a small Qt/KF6 C++ program inside the chroot.
 
 ## Build locally
 
@@ -175,7 +175,7 @@ Pull-request and other build-only runs place the same version and package-diff i
 
 The output is designed to be public. The build starts with an empty directory populated by `debootstrap`; it does not archive the GitHub Actions runner or a developer home directory.
 
-Before publication, [`scripts/validate-rootfs.sh`](scripts/validate-rootfs.sh) rejects common credential locations, verifies required packages, checks that machine identity is not persisted, and configures a small CMake project against the installed Qt/KF6 development files.
+Before publication, [`scripts/validate-rootfs.sh`](scripts/validate-rootfs.sh) rejects common credential locations, verifies required packages, checks that machine identity is not persisted, and configures, compiles, links and executes a small Qt/KF6 C++ smoke test within the rootfs. Checkout credentials are not persisted to the worktree.
 
 The build intentionally does not copy repository credentials, user configuration or CI environment files into the rootfs.
 
@@ -183,7 +183,9 @@ The build intentionally does not copy repository credentials, user configuration
 
 Edit `packages.txt`. Pull requests perform a complete build and validation without publishing. Once merged to `main`, the merge-triggered build creates the next patch release if validation succeeds.
 
-The workflow also rebuilds and publishes weekly so dependency updates from Debian testing are captured even when the repository itself has not changed.
+The workflow also rebuilds and publishes weekly so dependency updates from Debian testing are captured even when the repository itself has not changed. Dependabot checks GitHub Actions dependencies monthly.
+
+Published package manifests record exact Debian package versions, but rebuilding later from the moving `forky` repositories is **not** bit-for-bit reproducible. To reproduce a dependency set, retain the original archive or use an explicitly pinned Debian snapshot and package manifest.
 
 ## Redistribution
 
